@@ -1,23 +1,16 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-)
 
-const (
-	releasesPageSize = 100
-	tagsPageSize     = 100
-	githubAPIVersion = "2022-11-28"
+	"github.com/google/go-github/v93/github"
 )
 
 type Release struct {
@@ -36,6 +29,7 @@ type TagCommit struct {
 	SHA string `json:"sha"`
 }
 
+// main 启动清理任务，并在失败时输出错误并退出。
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
@@ -43,6 +37,7 @@ func main() {
 	}
 }
 
+// run 校验参数，筛选并清理 Release 与可选的 Git Tag。
 func run() error {
 	apiEndpoint := strings.TrimRight(getEnv("GITHUB_API_URL", "https://api.github.com"), "/")
 	token := getEnv("INPUT_TOKEN", os.Getenv("GITHUB_TOKEN"))
@@ -62,6 +57,10 @@ func run() error {
 	}
 	if slug == "" {
 		errs = append(errs, "缺少必要环境变量 GITHUB_REPOSITORY（GitHub Actions 自动注入）")
+	}
+	owner, repo, validSlug := strings.Cut(slug, "/")
+	if !validSlug || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		errs = append(errs, fmt.Sprintf("环境变量 GITHUB_REPOSITORY 必须是 owner/repo 格式，当前值: %q", slug))
 	}
 	if keepErr != nil || keep < 0 {
 		errs = append(errs, fmt.Sprintf("参数 keep 必须是非负整数，当前值: %q", os.Getenv("INPUT_KEEP")))
@@ -105,8 +104,20 @@ func run() error {
 		return fmt.Errorf("参数校验失败:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
-	releases, err := fetchAllReleases(client, apiEndpoint, slug, token)
+	location := localLocation()
+	fmt.Printf("使用时区: %s\n", location)
+
+	ctx := context.Background()
+	client, err := github.NewClient(
+		github.WithTimeout(60*time.Second),
+		github.WithAuthToken(token),
+		github.WithURLs(&apiEndpoint, nil),
+	)
+	if err != nil {
+		return fmt.Errorf("初始化 GitHub 客户端失败: %w", err)
+	}
+
+	releases, err := fetchAllReleases(ctx, client, owner, repo)
 	if err != nil {
 		return fmt.Errorf("获取 Release 列表失败: %w", err)
 	}
@@ -114,22 +125,22 @@ func run() error {
 
 	var tags []Tag
 	if deleteTag {
-		tags, err = fetchAllTags(client, apiEndpoint, slug, token)
+		tags, err = fetchAllTags(ctx, client, owner, repo)
 		if err != nil {
 			return fmt.Errorf("获取 Git Tag 列表失败: %w", err)
 		}
 		fmt.Printf("共发现 %d 个 Git Tag\n", len(tags))
 		if mode != "regex" {
-			if err := populateTagCreatedAt(client, apiEndpoint, slug, token, tags, releases, protectRegex); err != nil {
+			if err := populateTagCreatedAt(ctx, client, owner, repo, tags, releases, location, protectRegex); err != nil {
 				return fmt.Errorf("获取 Git Tag 时间失败: %w", err)
 			}
 		}
 	}
 
-	toDeleteReleases := filterReleases(releases, mode, keep, days, protectRegex, matchRegex)
+	toDeleteReleases := filterReleases(releases, mode, keep, days, location, protectRegex, matchRegex)
 	var toDeleteTags []Tag
 	if deleteTag {
-		toDeleteTags = filterTags(tags, mode, keep, days, protectRegex, matchRegex)
+		toDeleteTags = filterTags(tags, mode, keep, days, location, protectRegex, matchRegex)
 	}
 
 	if len(toDeleteReleases) == 0 && len(toDeleteTags) == 0 {
@@ -152,13 +163,13 @@ func run() error {
 	if len(toDeleteReleases) > 0 {
 		fmt.Printf("\n计划删除 %d 个 Release:\n", len(toDeleteReleases))
 		for _, rel := range toDeleteReleases {
-			fmt.Printf("  [%d] %s (%s)\n", rel.ID, rel.TagName, displayTime(rel.CreatedAt))
+			fmt.Printf("  [%d] %s (%s)\n", rel.ID, rel.TagName, displayTime(rel.CreatedAt, location))
 		}
 	}
 	if len(toDeleteTags) > 0 {
 		fmt.Printf("\n计划删除 %d 个 Git Tag:\n", len(toDeleteTags))
 		for _, tag := range toDeleteTags {
-			fmt.Printf("  %s (%s)\n", tag.Name, displayTime(tag.CreatedAt))
+			fmt.Printf("  %s (%s)\n", tag.Name, displayTime(tag.CreatedAt, location))
 		}
 	}
 
@@ -171,7 +182,7 @@ func run() error {
 	releaseSuccess, releaseFail := 0, 0
 	for _, rel := range toDeleteReleases {
 		fmt.Printf("\n删除 Release [%d] %s... ", rel.ID, rel.TagName)
-		if err := deleteRelease(client, apiEndpoint, slug, token, rel.ID); err != nil {
+		if err := deleteRelease(ctx, client, owner, repo, rel.ID); err != nil {
 			fmt.Printf("失败: %v\n", err)
 			releaseFail++
 			deleteErrs = append(deleteErrs, fmt.Sprintf("Release %s: %v", rel.TagName, err))
@@ -184,7 +195,7 @@ func run() error {
 	tagSuccess, tagFail := 0, 0
 	for _, tag := range toDeleteTags {
 		fmt.Printf("\n删除 Git Tag %s... ", tag.Name)
-		if err := deleteGitTag(client, apiEndpoint, slug, token, tag.Name); err != nil {
+		if err := deleteGitTag(ctx, client, owner, repo, tag.Name); err != nil {
 			fmt.Printf("失败: %v\n", err)
 			tagFail++
 			deleteErrs = append(deleteErrs, fmt.Sprintf("Git Tag %s: %v", tag.Name, err))
@@ -201,83 +212,53 @@ func run() error {
 	return nil
 }
 
-func setGitHubHeaders(req *http.Request, token string) {
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
-}
-
-func fetchAllReleases(client *http.Client, api, slug, token string) ([]Release, error) {
+// fetchAllReleases 分页获取仓库的全部 Release。
+func fetchAllReleases(ctx context.Context, client *github.Client, owner, repo string) ([]Release, error) {
 	var all []Release
-	for page := 1; ; page++ {
-		endpoint := fmt.Sprintf("%s/repos/%s/releases?page=%d&per_page=%d", api, slug, page, releasesPageSize)
-		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	opts := &github.ListOptions{Page: 1, PerPage: 100}
+	for {
+		pageReleases, resp, err := client.Repositories.ListReleases(ctx, owner, repo, opts)
 		if err != nil {
 			return nil, err
 		}
-		setGitHubHeaders(req, token)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("第 %d 页请求失败: %w", page, err)
+		for _, rel := range pageReleases {
+			all = append(all, Release{
+				ID:        rel.GetID(),
+				TagName:   rel.GetTagName(),
+				CreatedAt: rel.GetCreatedAt().Format(time.RFC3339),
+			})
 		}
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("第 %d 页读取响应失败: %w", page, readErr)
+		if resp.NextPage == 0 {
+			return all, nil
 		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("第 %d 页 API 返回 %d: %s", page, resp.StatusCode, truncate(string(body), 200))
-		}
-
-		var pageReleases []Release
-		if err := json.Unmarshal(body, &pageReleases); err != nil {
-			return nil, fmt.Errorf("第 %d 页响应解析失败: %w: %s", page, err, truncate(string(body), 200))
-		}
-		all = append(all, pageReleases...)
-		if len(pageReleases) < releasesPageSize {
-			break
-		}
+		opts.Page = resp.NextPage
 	}
-	return all, nil
 }
 
-func fetchAllTags(client *http.Client, api, slug, token string) ([]Tag, error) {
+// fetchAllTags 分页获取仓库的全部 Git Tag。
+func fetchAllTags(ctx context.Context, client *github.Client, owner, repo string) ([]Tag, error) {
 	var all []Tag
-	for page := 1; ; page++ {
-		endpoint := fmt.Sprintf("%s/repos/%s/tags?page=%d&per_page=%d", api, slug, page, tagsPageSize)
-		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	opts := &github.ListOptions{Page: 1, PerPage: 100}
+	for {
+		pageTags, resp, err := client.Repositories.ListTags(ctx, owner, repo, opts)
 		if err != nil {
 			return nil, err
 		}
-		setGitHubHeaders(req, token)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("第 %d 页请求失败: %w", page, err)
+		for _, tag := range pageTags {
+			all = append(all, Tag{
+				Name:   tag.GetName(),
+				Commit: TagCommit{SHA: tag.GetCommit().GetSHA()},
+			})
 		}
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("第 %d 页读取响应失败: %w", page, readErr)
+		if resp.NextPage == 0 {
+			return all, nil
 		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("第 %d 页 API 返回 %d: %s", page, resp.StatusCode, truncate(string(body), 200))
-		}
-
-		var pageTags []Tag
-		if err := json.Unmarshal(body, &pageTags); err != nil {
-			return nil, fmt.Errorf("第 %d 页响应解析失败: %w: %s", page, err, truncate(string(body), 200))
-		}
-		all = append(all, pageTags...)
-		if len(pageTags) < tagsPageSize {
-			break
-		}
+		opts.Page = resp.NextPage
 	}
-	return all, nil
 }
 
-func populateTagCreatedAt(client *http.Client, api, slug, token string, tags []Tag, releases []Release, protect *regexp.Regexp) error {
+// populateTagCreatedAt 补充 Tag 时间，优先复用 Release 时间，否则查询提交时间。
+func populateTagCreatedAt(ctx context.Context, client *github.Client, owner, repo string, tags []Tag, releases []Release, location *time.Location, protect *regexp.Regexp) error {
 	releaseDates := make(map[string]string, len(releases))
 	for _, rel := range releases {
 		if rel.TagName != "" {
@@ -292,7 +273,7 @@ func populateTagCreatedAt(client *http.Client, api, slug, token string, tags []T
 			continue
 		}
 		if createdAt, ok := releaseDates[tag.Name]; ok {
-			if _, ok := parseCreatedAt(createdAt); ok {
+			if _, ok := parseCreatedAt(createdAt, location); ok {
 				tag.CreatedAt = createdAt
 				continue
 			}
@@ -303,7 +284,7 @@ func populateTagCreatedAt(client *http.Client, api, slug, token string, tags []T
 		createdAt, ok := commitDates[tag.Commit.SHA]
 		if !ok {
 			var err error
-			createdAt, err = fetchCommitCreatedAt(client, api, slug, token, tag.Commit.SHA)
+			createdAt, err = fetchCommitCreatedAt(ctx, client, owner, repo, tag.Commit.SHA)
 			if err != nil {
 				return fmt.Errorf("Git Tag %s: %w", tag.Name, err)
 			}
@@ -314,54 +295,26 @@ func populateTagCreatedAt(client *http.Client, api, slug, token string, tags []T
 	return nil
 }
 
-func fetchCommitCreatedAt(client *http.Client, api, slug, token, sha string) (string, error) {
-	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s", api, slug, url.PathEscape(sha))
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+// fetchCommitCreatedAt 获取提交时间，优先使用 committer 时间。
+func fetchCommitCreatedAt(ctx context.Context, client *github.Client, owner, repo, sha string) (string, error) {
+	commit, _, err := client.Repositories.GetCommit(ctx, owner, repo, sha, nil)
 	if err != nil {
 		return "", err
 	}
-	setGitHubHeaders(req, token)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+	if date := commit.GetCommit().GetCommitter().GetDate(); !date.IsZero() {
+		return date.Format(time.RFC3339), nil
 	}
-	defer resp.Body.Close()
-
-	body, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return "", fmt.Errorf("读取响应失败: %w", readErr)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API 返回 %d: %s", resp.StatusCode, truncate(string(body), 200))
-	}
-
-	var commit struct {
-		Commit struct {
-			Committer struct {
-				Date string `json:"date"`
-			} `json:"committer"`
-			Author struct {
-				Date string `json:"date"`
-			} `json:"author"`
-		} `json:"commit"`
-	}
-	if err := json.Unmarshal(body, &commit); err != nil {
-		return "", fmt.Errorf("响应解析失败: %w: %s", err, truncate(string(body), 200))
-	}
-	if commit.Commit.Committer.Date != "" {
-		return commit.Commit.Committer.Date, nil
-	}
-	if commit.Commit.Author.Date != "" {
-		return commit.Commit.Author.Date, nil
+	if date := commit.GetCommit().GetAuthor().GetDate(); !date.IsZero() {
+		return date.Format(time.RFC3339), nil
 	}
 	return "", fmt.Errorf("提交 %s 缺少时间信息", sha)
 }
 
-func filterReleases(releases []Release, mode string, keep, days int, protect, match *regexp.Regexp) []Release {
+// filterReleases 按清理模式筛选待删除的 Release，并跳过受保护版本。
+func filterReleases(releases []Release, mode string, keep, days int, location *time.Location, protect, match *regexp.Regexp) []Release {
 	sort.Slice(releases, func(i, j int) bool {
-		ti, oki := parseCreatedAt(releases[i].CreatedAt)
-		tj, okj := parseCreatedAt(releases[j].CreatedAt)
+		ti, oki := parseCreatedAt(releases[i].CreatedAt, location)
+		tj, okj := parseCreatedAt(releases[j].CreatedAt, location)
 		if oki && okj {
 			return ti.After(tj)
 		}
@@ -387,13 +340,13 @@ func filterReleases(releases []Release, mode string, keep, days int, protect, ma
 		return toDelete
 
 	case "by_days":
-		cutoff := time.Now().AddDate(0, 0, -days)
+		cutoff := time.Now().In(location).AddDate(0, 0, -days)
 		var toDelete []Release
 		for _, rel := range releases {
 			if protect != nil && protect.MatchString(rel.TagName) {
 				continue
 			}
-			created, ok := parseCreatedAt(rel.CreatedAt)
+			created, ok := parseCreatedAt(rel.CreatedAt, location)
 			if !ok {
 				continue
 			}
@@ -417,10 +370,11 @@ func filterReleases(releases []Release, mode string, keep, days int, protect, ma
 	}
 }
 
-func filterTags(tags []Tag, mode string, keep, days int, protect, match *regexp.Regexp) []Tag {
+// filterTags 按清理模式独立筛选待删除的 Git Tag，并跳过受保护版本。
+func filterTags(tags []Tag, mode string, keep, days int, location *time.Location, protect, match *regexp.Regexp) []Tag {
 	sort.Slice(tags, func(i, j int) bool {
-		ti, oki := parseCreatedAt(tags[i].CreatedAt)
-		tj, okj := parseCreatedAt(tags[j].CreatedAt)
+		ti, oki := parseCreatedAt(tags[i].CreatedAt, location)
+		tj, okj := parseCreatedAt(tags[j].CreatedAt, location)
 		if oki && okj {
 			return ti.After(tj)
 		}
@@ -446,13 +400,13 @@ func filterTags(tags []Tag, mode string, keep, days int, protect, match *regexp.
 		return toDelete
 
 	case "by_days":
-		cutoff := time.Now().AddDate(0, 0, -days)
+		cutoff := time.Now().In(location).AddDate(0, 0, -days)
 		var toDelete []Tag
 		for _, tag := range tags {
 			if protect != nil && protect.MatchString(tag.Name) {
 				continue
 			}
-			created, ok := parseCreatedAt(tag.CreatedAt)
+			created, ok := parseCreatedAt(tag.CreatedAt, location)
 			if !ok {
 				continue
 			}
@@ -476,54 +430,19 @@ func filterTags(tags []Tag, mode string, keep, days int, protect, match *regexp.
 	}
 }
 
-func deleteRelease(client *http.Client, api, slug, token string, id int64) error {
-	endpoint := fmt.Sprintf("%s/repos/%s/releases/%d", api, slug, id)
-	req, err := http.NewRequest(http.MethodDelete, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	setGitHubHeaders(req, token)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return fmt.Errorf("HTTP %d（读取响应失败: %v）", resp.StatusCode, readErr)
-		}
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 100))
-	}
-	return nil
+// deleteRelease 删除指定 ID 的 Release。
+func deleteRelease(ctx context.Context, client *github.Client, owner, repo string, id int64) error {
+	_, err := client.Repositories.DeleteRelease(ctx, owner, repo, id)
+	return err
 }
 
-func deleteGitTag(client *http.Client, api, slug, token, tag string) error {
-	endpoint := fmt.Sprintf("%s/repos/%s/git/refs/tags/%s", api, slug, url.PathEscape(tag))
-	req, err := http.NewRequest(http.MethodDelete, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	setGitHubHeaders(req, token)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return fmt.Errorf("HTTP %d（读取响应失败: %v）", resp.StatusCode, readErr)
-		}
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 100))
-	}
-	return nil
+// deleteGitTag 删除指定名称的 Git Tag 引用。
+func deleteGitTag(ctx context.Context, client *github.Client, owner, repo, tag string) error {
+	_, err := client.Git.DeleteRef(ctx, owner, repo, "tags/"+tag)
+	return err
 }
 
+// getEnv 读取环境变量，值为空时返回默认值。
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -531,6 +450,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// parseBoolEnv 解析布尔型环境变量，值为空时返回默认值。
 func parseBoolEnv(key string, fallback bool) (bool, error) {
 	v := os.Getenv(key)
 	if v == "" {
@@ -541,30 +461,4 @@ func parseBoolEnv(key string, fallback bool) (bool, error) {
 		return fallback, fmt.Errorf("参数 %s 必须是布尔值，当前值: %q", strings.ToLower(strings.TrimPrefix(key, "INPUT_")), v)
 	}
 	return parsed, nil
-}
-
-func parseCreatedAt(value string) (time.Time, bool) {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02"} {
-		if parsed, err := time.Parse(layout, value); err == nil {
-			return parsed, true
-		}
-	}
-	return time.Time{}, false
-}
-
-func displayTime(value string) string {
-	if parsed, ok := parseCreatedAt(value); ok {
-		return parsed.Format("2006-01-02")
-	}
-	if len(value) > 10 {
-		return value[:10]
-	}
-	return value
-}
-
-func truncate(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	return value[:limit] + "..."
 }

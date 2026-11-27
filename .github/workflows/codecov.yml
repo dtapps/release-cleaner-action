@@ -1,0 +1,60 @@
+name: Codecov
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/dtapps/golang:latest
+      env:
+        GIT_SHIM_SAFE_DIRECTORY: 'true'
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+      - name: 设置 Go 工具链目录
+        shell: bash
+        run: |
+          echo "GO_PATH_DIR=/go" >> "$GITHUB_ENV"
+          echo "GO_BIN_DIR=/go/bin" >> "$GITHUB_ENV"
+      - name: 缓存 Go module
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.GO_PATH_DIR }}/pkg/mod
+          key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-mod-
+      - name: 缓存 Go build 缓存
+        uses: actions/cache@v6
+        with:
+          path: ${{ format('{0}/.cache/go-build', env.HOME) }}
+          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+      - name: 安装依赖
+        run: make deps
+      - name: 生成 Go 测试覆盖率与测试报告
+        run: make junit-go
+      - name: 上传 Go 覆盖率到 Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          flags: go
+          fail_ci_if_error: false
+      - name: 上传测试结果到 Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./go-test-report.xml,./frontend/coverage/junit.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: false

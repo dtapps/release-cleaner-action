@@ -1,10 +1,6 @@
 # release-cleaner（GitHub Action）
 
-[![Release](https://img.shields.io/github/v/release/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/releases)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/dtapps/release-cleaner-action?style=flat)](https://go.dev/)
-[![License](https://img.shields.io/github/license/dtapps/release-cleaner-action?style=flat)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/stargazers)
-[![Issues](https://img.shields.io/github/issues/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/issues)
+[![Release](https://img.shields.io/github/v/release/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/releases) [![Go Version](https://img.shields.io/github/go-mod/go-version/dtapps/release-cleaner-action?style=flat)](https://go.dev/) [![License](https://img.shields.io/github/license/dtapps/release-cleaner-action?style=flat)](LICENSE) [![Stars](https://img.shields.io/github/stars/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/stargazers) [![Issues](https://img.shields.io/github/issues/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/issues)
 
 自动清理 GitHub 仓库中的旧版本 Release，支持按数量、天数、正则匹配三种模式；开启 `delete_git_tag` 后，还会按相同规则独立清理 Git Tag。参数与 [CNB 版 release-cleaner](https://cnb.cool/dtapp/plugins/release-cleaner) 保持一致，方便在两个平台间迁移。
 
@@ -41,7 +37,7 @@ permissions:
 
 jobs:
   cleanup:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: 清理旧版本
         uses: dtapps/release-cleaner-action@main
@@ -64,7 +60,7 @@ permissions:
 
 jobs:
   cleanup:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       # protect 保住正式版、latest/stable 与 rc/beta/alpha，避免 by_count 误删非 nightly 版本；
       # dry_run 必须显式为 false，否则插件默认只列出待删除版本。
@@ -83,15 +79,15 @@ jobs:
 
 > 与 CNB 版参数一一对应，仅将 `settings:` 改为 `with:`。
 
-| 参数 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `mode` | string | `by_count` | 清理模式：`by_count` / `by_days` / `regex` |
-| `keep` | number | `5` | `by_count` 模式下保留最近多少个版本，必须是非负整数 |
-| `days` | number | `30` | `by_days` 模式下保留多少天内的版本，必须是非负整数 |
-| `regex` | string | `""` | `regex` 模式下匹配要删除的版本名正则，模式为 `regex` 时必填 |
-| `protect` | string | 见下方 | 保护名单正则，匹配的版本不会被删除 |
-| `delete_git_tag` | boolean | `false` | 是否按相同规则独立清理 Git Tag（不可恢复） |
-| `dry_run` | boolean | `true` | 预演模式，只列出不执行删除 |
+| 参数             | 类型    | 默认值     | 说明                                                        |
+|------------------|---------|------------|-------------------------------------------------------------|
+| `mode`           | string  | `by_count` | 清理模式：`by_count` / `by_days` / `regex`                  |
+| `keep`           | number  | `5`        | `by_count` 模式下保留最近多少个版本，必须是非负整数         |
+| `days`           | number  | `30`       | `by_days` 模式下保留多少天内的版本，必须是非负整数          |
+| `regex`          | string  | `""`       | `regex` 模式下匹配要删除的版本名正则，模式为 `regex` 时必填 |
+| `protect`        | string  | 见下方     | 保护名单正则，匹配的版本不会被删除                          |
+| `delete_git_tag` | boolean | `false`    | 是否按相同规则独立清理 Git Tag（不可恢复）                  |
+| `dry_run`        | boolean | `true`     | 预演模式，只列出不执行删除                                  |
 
 GitHub 平台额外提供一个 `token` 参数，默认值为 `${{ github.token }}`，一般无需显式传入；如需使用 PAT 或其他 Token，可通过 `with.token` 覆盖。
 
@@ -117,7 +113,7 @@ with:
 
 ### by_days（按天数保留）
 
-保留 N 天内的版本，删除更早的版本。适合按时间维度清理。
+保留 N 天内的版本，删除更早的版本。适合按时间维度清理。时间筛选和日志日期优先使用环境变量 `TZ` 指定的时区，未设置时使用运行环境的本地时区，无法获取时回退到 UTC。
 
 ```yaml
 with:
@@ -203,7 +199,7 @@ permissions:
 
 jobs:
   cleanup:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: 定期清理
         uses: dtapps/release-cleaner-action@main

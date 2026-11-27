@@ -11,25 +11,34 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/dtapps/golang:latest
+      env:
+        GIT_SHIM_SAFE_DIRECTORY: 'true'
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
-
-      - name: 设置 Go
-        uses: actions/setup-go@v6
+      - name: 设置 Go 工具链目录
+        shell: bash
+        run: |
+          echo "GO_PATH_DIR=/go" >> "$GITHUB_ENV"
+          echo "GO_BIN_DIR=/go/bin" >> "$GITHUB_ENV"
+      - name: 缓存 Go module
+        uses: actions/cache@v6
         with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: 运行测试
-        run: go test ./...
-
-      - name: 静态检查
-        run: go vet ./...
-
-      - name: 构建
-        run: go build -o /tmp/release-cleaner .
-
-      - name: 构建 Docker 镜像
-        run: docker build -t release-cleaner:test .
+          path: ${{ env.GO_PATH_DIR }}/pkg/mod
+          key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-mod-
+      - name: 缓存 Go build 缓存
+        uses: actions/cache@v6
+        with:
+          path: ${{ format('{0}/.cache/go-build', env.HOME) }}
+          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+      - name: 安装依赖
+        run: make deps
+      - name: 项目检查
+        run: make check

@@ -10,6 +10,15 @@ updates:
       - 'dependencies'
       - 'go'
 
+  # Docker 镜像依赖（扫描根目录 Dockerfile）
+  - package-ecosystem: 'docker'
+    directory: '/'
+    schedule:
+      interval: 'daily'
+    labels:
+      - 'dependencies'
+      - 'docker'
+
   # GitHub Actions 依赖（扫描 .github/workflows 下的第三方 action 版本）
   - package-ecosystem: 'github-actions'
     directory: '/'

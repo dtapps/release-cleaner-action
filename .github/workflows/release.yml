@@ -13,26 +13,29 @@ on:
 
 permissions:
   contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/dtapps/release-cleaner-action
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  prepare:
+    name: 校验发布版本
+    runs-on: ubuntu-26.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: 校验版本 tag
+        id: version
         run: |
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::版本 tag 必须符合 vX.Y.Z 格式，当前值：$TAG"
             exit 1
           fi
-
-      - name: 检出代码
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: 检查远端 tag 是否存在
         id: tag_check
         run: |
@@ -41,7 +44,6 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-
       - name: 通过 API 创建 tag
         if: steps.tag_check.outputs.exists == 'false'
         run: |
@@ -50,6 +52,85 @@ jobs:
             -f sha="${{ github.sha }}"
           echo "Tag $TAG 已由工作流创建"
 
+  build:
+    name: 构建 ${{ matrix.goarch }} 发布镜像
+    runs-on: ${{ matrix.os }}
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            goarch: amd64
+          - os: ubuntu-26.04-arm
+            goarch: arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: 登录镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.goarch }}
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.tag }}-${{ matrix.goarch }}
+          provenance: false
+          sbom: false
+
+  manifest:
+    name: 合并发布镜像
+    runs-on: ubuntu-26.04
+    needs: [prepare, build]
+    steps:
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: 登录镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 合并版本与 latest 多架构镜像
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$IMAGE_NAME:$TAG" \
+            "$IMAGE_NAME:$TAG-amd64" \
+            "$IMAGE_NAME:$TAG-arm64"
+          docker buildx imagetools create \
+            --tag "$IMAGE_NAME:latest" \
+            "$IMAGE_NAME:$TAG-amd64" \
+            "$IMAGE_NAME:$TAG-arm64"
+      - name: 检查多架构镜像
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE_NAME:$TAG"
+          docker buildx imagetools inspect "$IMAGE_NAME:latest"
+
+  release:
+    name: 发布 Release
+    runs-on: ubuntu-26.04
+    needs: [prepare, manifest]
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
       - name: 检查 Release 是否已存在
         id: check
         run: |
@@ -58,7 +139,6 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-
       - name: 生成 Release 正文
         run: |
           previous_tag=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
@@ -74,7 +154,6 @@ jobs:
             git log --reverse --pretty=format:'- %s (%h)' --no-merges "$range"
             echo
           } > release-notes.md
-
       - name: 发布 Release
         if: steps.check.outputs.exists == 'false'
         run: |

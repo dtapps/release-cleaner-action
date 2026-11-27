@@ -1,0 +1,36 @@
+version: '2'
+
+run:
+  timeout: '3m'
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx
+    - staticcheck
+    - unconvert
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - '-ST1005'
+  exclusions:
+    rules:
+      # 测试中的固定 token 仅用于验证认证头，不是真实凭证。
+      - linters:
+          - gosec
+        path: '_test\.go$'
+        text: 'G101'
+
+formatters:
+  enable:
+    - gofmt

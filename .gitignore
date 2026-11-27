@@ -11,3 +11,14 @@
 
 # Ai
 AGENTS.md
+
+# 二进制
+release-cleaner
+
+# 测试
+# *_test.go
+
+# 测试覆盖率
+coverage.out
+go-test-report.xml
+coverage.xml

@@ -1,0 +1,67 @@
+name: Push 构建镜像
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/dtapps/release-cleaner-action
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.goarch }} 镜像
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            goarch: amd64
+          - os: ubuntu-26.04-arm
+            goarch: arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: 登录镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.goarch }}
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:latest-${{ matrix.goarch }}
+          provenance: false
+          sbom: false
+
+  manifest:
+    name: 合并 latest 多架构镜像
+    runs-on: ubuntu-26.04
+    needs: build
+    steps:
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: 登录镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 合并多架构镜像
+        run: |
+          docker buildx imagetools create \
+            --tag "$IMAGE_NAME:latest" \
+            "$IMAGE_NAME:latest-amd64" \
+            "$IMAGE_NAME:latest-arm64"
+      - name: 检查多架构镜像
+        run: docker buildx imagetools inspect "$IMAGE_NAME:latest"

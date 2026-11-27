@@ -16,6 +16,7 @@ import (
 
 const (
 	releasesPageSize = 100
+	tagsPageSize     = 100
 	githubAPIVersion = "2022-11-28"
 )
 
@@ -23,6 +24,16 @@ type Release struct {
 	ID        int64  `json:"id"`
 	TagName   string `json:"tag_name"`
 	CreatedAt string `json:"created_at"`
+}
+
+type Tag struct {
+	Name      string    `json:"name"`
+	Commit    TagCommit `json:"commit"`
+	CreatedAt string    `json:"-"`
+}
+
+type TagCommit struct {
+	SHA string `json:"sha"`
 }
 
 func main() {
@@ -100,20 +111,55 @@ func run() error {
 		return fmt.Errorf("获取 Release 列表失败: %w", err)
 	}
 	fmt.Printf("共发现 %d 个 Release\n", len(releases))
-	if len(releases) == 0 {
-		fmt.Println("没有需要清理的 Release")
+
+	var tags []Tag
+	if deleteTag {
+		tags, err = fetchAllTags(client, apiEndpoint, slug, token)
+		if err != nil {
+			return fmt.Errorf("获取 Git Tag 列表失败: %w", err)
+		}
+		fmt.Printf("共发现 %d 个 Git Tag\n", len(tags))
+		if mode != "regex" {
+			if err := populateTagCreatedAt(client, apiEndpoint, slug, token, tags, releases, protectRegex); err != nil {
+				return fmt.Errorf("获取 Git Tag 时间失败: %w", err)
+			}
+		}
+	}
+
+	toDeleteReleases := filterReleases(releases, mode, keep, days, protectRegex, matchRegex)
+	var toDeleteTags []Tag
+	if deleteTag {
+		toDeleteTags = filterTags(tags, mode, keep, days, protectRegex, matchRegex)
+	}
+
+	if len(toDeleteReleases) == 0 && len(toDeleteTags) == 0 {
+		if !deleteTag {
+			if len(releases) == 0 {
+				fmt.Println("没有需要清理的 Release")
+			} else {
+				fmt.Println("所有版本都在保护范围内，无需清理")
+			}
+			return nil
+		}
+		if len(releases) == 0 && len(tags) == 0 {
+			fmt.Println("没有需要清理的 Release 或 Git Tag")
+		} else {
+			fmt.Println("所有版本都在保护范围内或无需清理")
+		}
 		return nil
 	}
 
-	toDelete := filterReleases(releases, mode, keep, days, protectRegex, matchRegex)
-	if len(toDelete) == 0 {
-		fmt.Println("所有版本都在保护范围内，无需清理")
-		return nil
+	if len(toDeleteReleases) > 0 {
+		fmt.Printf("\n计划删除 %d 个 Release:\n", len(toDeleteReleases))
+		for _, rel := range toDeleteReleases {
+			fmt.Printf("  [%d] %s (%s)\n", rel.ID, rel.TagName, displayTime(rel.CreatedAt))
+		}
 	}
-
-	fmt.Printf("\n计划删除 %d 个 Release:\n", len(toDelete))
-	for _, rel := range toDelete {
-		fmt.Printf("  [%d] %s (%s)\n", rel.ID, rel.TagName, displayTime(rel.CreatedAt))
+	if len(toDeleteTags) > 0 {
+		fmt.Printf("\n计划删除 %d 个 Git Tag:\n", len(toDeleteTags))
+		for _, tag := range toDeleteTags {
+			fmt.Printf("  %s (%s)\n", tag.Name, displayTime(tag.CreatedAt))
+		}
 	}
 
 	if dryRun {
@@ -121,32 +167,34 @@ func run() error {
 		return nil
 	}
 
-	success, fail := 0, 0
 	var deleteErrs []string
-	for _, rel := range toDelete {
+	releaseSuccess, releaseFail := 0, 0
+	for _, rel := range toDeleteReleases {
 		fmt.Printf("\n删除 Release [%d] %s... ", rel.ID, rel.TagName)
 		if err := deleteRelease(client, apiEndpoint, slug, token, rel.ID); err != nil {
 			fmt.Printf("失败: %v\n", err)
-			fail++
+			releaseFail++
 			deleteErrs = append(deleteErrs, fmt.Sprintf("Release %s: %v", rel.TagName, err))
 			continue
 		}
-		fmt.Print("Release 已删除")
-
-		if deleteTag && rel.TagName != "" {
-			if err := deleteGitTag(client, apiEndpoint, slug, token, rel.TagName); err != nil {
-				msg := fmt.Sprintf("Git Tag %s 删除失败: %v", rel.TagName, err)
-				fmt.Printf(", %s", msg)
-				deleteErrs = append(deleteErrs, msg)
-			} else {
-				fmt.Print(", Git Tag 已删除")
-			}
-		}
-		fmt.Println()
-		success++
+		fmt.Println("Release 已删除")
+		releaseSuccess++
 	}
 
-	fmt.Printf("\n完成: 成功 %d, 失败 %d\n", success, fail)
+	tagSuccess, tagFail := 0, 0
+	for _, tag := range toDeleteTags {
+		fmt.Printf("\n删除 Git Tag %s... ", tag.Name)
+		if err := deleteGitTag(client, apiEndpoint, slug, token, tag.Name); err != nil {
+			fmt.Printf("失败: %v\n", err)
+			tagFail++
+			deleteErrs = append(deleteErrs, fmt.Sprintf("Git Tag %s: %v", tag.Name, err))
+			continue
+		}
+		fmt.Println("Git Tag 已删除")
+		tagSuccess++
+	}
+
+	fmt.Printf("\n完成: Release 成功 %d, 失败 %d; Git Tag 成功 %d, 失败 %d\n", releaseSuccess, releaseFail, tagSuccess, tagFail)
 	if len(deleteErrs) > 0 {
 		return fmt.Errorf("删除失败 %d 项:\n  - %s", len(deleteErrs), strings.Join(deleteErrs, "\n  - "))
 	}
@@ -192,6 +240,122 @@ func fetchAllReleases(client *http.Client, api, slug, token string) ([]Release, 
 		}
 	}
 	return all, nil
+}
+
+func fetchAllTags(client *http.Client, api, slug, token string) ([]Tag, error) {
+	var all []Tag
+	for page := 1; ; page++ {
+		endpoint := fmt.Sprintf("%s/repos/%s/tags?page=%d&per_page=%d", api, slug, page, tagsPageSize)
+		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		setGitHubHeaders(req, token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 页请求失败: %w", page, err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("第 %d 页读取响应失败: %w", page, readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("第 %d 页 API 返回 %d: %s", page, resp.StatusCode, truncate(string(body), 200))
+		}
+
+		var pageTags []Tag
+		if err := json.Unmarshal(body, &pageTags); err != nil {
+			return nil, fmt.Errorf("第 %d 页响应解析失败: %w: %s", page, err, truncate(string(body), 200))
+		}
+		all = append(all, pageTags...)
+		if len(pageTags) < tagsPageSize {
+			break
+		}
+	}
+	return all, nil
+}
+
+func populateTagCreatedAt(client *http.Client, api, slug, token string, tags []Tag, releases []Release, protect *regexp.Regexp) error {
+	releaseDates := make(map[string]string, len(releases))
+	for _, rel := range releases {
+		if rel.TagName != "" {
+			releaseDates[rel.TagName] = rel.CreatedAt
+		}
+	}
+
+	commitDates := make(map[string]string)
+	for i := range tags {
+		tag := &tags[i]
+		if protect != nil && protect.MatchString(tag.Name) {
+			continue
+		}
+		if createdAt, ok := releaseDates[tag.Name]; ok {
+			if _, ok := parseCreatedAt(createdAt); ok {
+				tag.CreatedAt = createdAt
+				continue
+			}
+		}
+		if tag.Commit.SHA == "" {
+			return fmt.Errorf("Git Tag %s 缺少 commit SHA", tag.Name)
+		}
+		createdAt, ok := commitDates[tag.Commit.SHA]
+		if !ok {
+			var err error
+			createdAt, err = fetchCommitCreatedAt(client, api, slug, token, tag.Commit.SHA)
+			if err != nil {
+				return fmt.Errorf("Git Tag %s: %w", tag.Name, err)
+			}
+			commitDates[tag.Commit.SHA] = createdAt
+		}
+		tag.CreatedAt = createdAt
+	}
+	return nil
+}
+
+func fetchCommitCreatedAt(client *http.Client, api, slug, token, sha string) (string, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s", api, slug, url.PathEscape(sha))
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	setGitHubHeaders(req, token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", fmt.Errorf("读取响应失败: %w", readErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API 返回 %d: %s", resp.StatusCode, truncate(string(body), 200))
+	}
+
+	var commit struct {
+		Commit struct {
+			Committer struct {
+				Date string `json:"date"`
+			} `json:"committer"`
+			Author struct {
+				Date string `json:"date"`
+			} `json:"author"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(body, &commit); err != nil {
+		return "", fmt.Errorf("响应解析失败: %w: %s", err, truncate(string(body), 200))
+	}
+	if commit.Commit.Committer.Date != "" {
+		return commit.Commit.Committer.Date, nil
+	}
+	if commit.Commit.Author.Date != "" {
+		return commit.Commit.Author.Date, nil
+	}
+	return "", fmt.Errorf("提交 %s 缺少时间信息", sha)
 }
 
 func filterReleases(releases []Release, mode string, keep, days int, protect, match *regexp.Regexp) []Release {
@@ -247,6 +411,65 @@ func filterReleases(releases []Release, mode string, keep, days int, protect, ma
 			}
 			if match != nil && match.MatchString(rel.TagName) {
 				toDelete = append(toDelete, rel)
+			}
+		}
+		return toDelete
+	}
+}
+
+func filterTags(tags []Tag, mode string, keep, days int, protect, match *regexp.Regexp) []Tag {
+	sort.Slice(tags, func(i, j int) bool {
+		ti, oki := parseCreatedAt(tags[i].CreatedAt)
+		tj, okj := parseCreatedAt(tags[j].CreatedAt)
+		if oki && okj {
+			return ti.After(tj)
+		}
+		if oki != okj {
+			return oki
+		}
+		return tags[i].CreatedAt > tags[j].CreatedAt
+	})
+
+	switch mode {
+	case "by_count":
+		var count int
+		var toDelete []Tag
+		for _, tag := range tags {
+			if protect != nil && protect.MatchString(tag.Name) {
+				continue
+			}
+			count++
+			if count > keep {
+				toDelete = append(toDelete, tag)
+			}
+		}
+		return toDelete
+
+	case "by_days":
+		cutoff := time.Now().AddDate(0, 0, -days)
+		var toDelete []Tag
+		for _, tag := range tags {
+			if protect != nil && protect.MatchString(tag.Name) {
+				continue
+			}
+			created, ok := parseCreatedAt(tag.CreatedAt)
+			if !ok {
+				continue
+			}
+			if created.Before(cutoff) {
+				toDelete = append(toDelete, tag)
+			}
+		}
+		return toDelete
+
+	default: // regex
+		var toDelete []Tag
+		for _, tag := range tags {
+			if protect != nil && protect.MatchString(tag.Name) {
+				continue
+			}
+			if match != nil && match.MatchString(tag.Name) {
+				toDelete = append(toDelete, tag)
 			}
 		}
 		return toDelete

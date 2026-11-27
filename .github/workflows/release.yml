@@ -30,6 +30,8 @@ jobs:
 
       - name: 检出代码
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: 检查远端 tag 是否存在
         id: tag_check
@@ -57,12 +59,28 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: 生成 Release 正文
+        run: |
+          previous_tag=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          if [ -n "$previous_tag" ]; then
+            range="$previous_tag..HEAD"
+          else
+            range="HEAD"
+          fi
+
+          {
+            echo "## 变更内容"
+            echo
+            git log --reverse --pretty=format:'- %s (%h)' --no-merges "$range"
+            echo
+          } > release-notes.md
+
       - name: 发布 Release
         if: steps.check.outputs.exists == 'false'
         run: |
           gh release create "$TAG" \
             --verify-tag \
             --title "Release Cleaner $TAG" \
-            --generate-notes
+            --notes-file release-notes.md
           echo "Release 已发布：${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
           echo "如需上架 Marketplace，请编辑该 Release，勾选 Publish this Action to the GitHub Marketplace 并设置分类。"

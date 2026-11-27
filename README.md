@@ -1,12 +1,18 @@
 # release-cleaner（GitHub Action）
 
-自动清理 GitHub 仓库中的旧版本 Release，支持按数量、天数、正则匹配三种清理模式。参数与 [CNB 版 release-cleaner](https://cnb.cool/dtapp/plugins/release-cleaner) 完全一致，方便在两个平台间迁移。
+[![Release](https://img.shields.io/github/v/release/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/dtapps/release-cleaner-action?style=flat)](https://go.dev/)
+[![License](https://img.shields.io/github/license/dtapps/release-cleaner-action?style=flat)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/stargazers)
+[![Issues](https://img.shields.io/github/issues/dtapps/release-cleaner-action?style=flat)](https://github.com/dtapps/release-cleaner-action/issues)
+
+自动清理 GitHub 仓库中的旧版本 Release，支持按数量、天数、正则匹配三种模式；开启 `delete_git_tag` 后，还会按相同规则独立清理 Git Tag。参数与 [CNB 版 release-cleaner](https://cnb.cool/dtapp/plugins/release-cleaner) 保持一致，方便在两个平台间迁移。
 
 ## 功能特性
 
 - 三种清理模式：按保留数量、按保留天数、按正则匹配
 - 保护名单：通过正则表达式保护重要版本不被误删
-- 可选删除 Git Tag：可同时删除 Release 对应的 Git Tag
+- 可选独立清理 Git Tag：开启后按相同规则单独筛选，支持只有 Tag 没有 Release 的版本
 - 预演模式：先列出要删除的版本，确认无误后再执行
 - 失败即失败：API 请求、参数校验或删除失败都会以非零退出码结束工作流
 - 超小镜像：基于 Go 静态编译
@@ -84,7 +90,7 @@ jobs:
 | `days` | number | `30` | `by_days` 模式下保留多少天内的版本，必须是非负整数 |
 | `regex` | string | `""` | `regex` 模式下匹配要删除的版本名正则，模式为 `regex` 时必填 |
 | `protect` | string | 见下方 | 保护名单正则，匹配的版本不会被删除 |
-| `delete_git_tag` | boolean | `false` | 是否同时删除 Git Tag（不可恢复） |
+| `delete_git_tag` | boolean | `false` | 是否按相同规则独立清理 Git Tag（不可恢复） |
 | `dry_run` | boolean | `true` | 预演模式，只列出不执行删除 |
 
 GitHub 平台额外提供一个 `token` 参数，默认值为 `${{ github.token }}`，一般无需显式传入；如需使用 PAT 或其他 Token，可通过 `with.token` 覆盖。
@@ -130,6 +136,12 @@ with:
   protect: '^(v\d+\.\d+\.\d+)$'
 ```
 
+### Release 与 Git Tag 数量不一致
+
+开启 `delete_git_tag: true` 后，Release 和 Git Tag 会分别获取、分别按相同的 `mode` / `keep` / `days` / `regex` / `protect` 规则筛选并删除，不会按列表下标或数量强行配对。因此，只有 Tag 没有 Release 的版本也会参与清理。
+
+`by_count` 和 `by_days` 模式下，同名 Tag 优先使用 Release 的创建时间；没有对应 Release 的 Tag 使用其指向提交的提交时间。若未受保护的 Tag 无法获取时间，任务会报错停止，避免误删。
+
 ## 安全建议
 
 ### 首次使用务必开启预演模式
@@ -150,9 +162,9 @@ with:
   protect: '^(v\d+\.\d+\.\d+|latest|stable|release-.*)$'
 ```
 
-### 谨慎开启 delete_git_tag
+### 独立清理 Git Tag
 
-删除 Git Tag 是不可恢复的操作，建议只在清理测试分支时开启：
+开启 `delete_git_tag` 后，Git Tag 会按相同规则独立清理，包括没有对应 Release 的孤立 Tag。删除 Git Tag 是不可恢复的操作，建议只在清理测试版本时开启：
 
 ```yaml
 with:
@@ -167,7 +179,7 @@ with:
 
 1. `dry_run: true`，处于预演模式
 2. 所有版本都匹配了 `protect` 保护正则
-3. 仓库中没有 Release
+3. 仓库中没有可清理的 Release 或 Git Tag（未开启 `delete_git_tag` 时只检查 Release）
 
 ### Q: 提示 403 Forbidden？
 

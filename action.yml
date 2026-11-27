@@ -1,0 +1,44 @@
+name: 'Release Cleaner'
+description: '自动清理 GitHub 仓库中的旧版本 Release，支持按数量、天数、正则匹配三种模式，可同时删除 Git Tag，并提供预演模式'
+author: 'dtapps'
+branding:
+  icon: 'trash-2'
+  color: 'red'
+
+inputs:
+  token:
+    description: 'GitHub Token，需要 contents: write 权限（用于删除 Release 和 Git Tag）'
+    required: false
+    default: ${{ github.token }}
+  mode:
+    description: '清理模式：by_count / by_days / regex'
+    required: false
+    default: 'by_count'
+  keep:
+    description: 'by_count 模式下保留最近多少个版本，必须是非负整数'
+    required: false
+    default: '5'
+  days:
+    description: 'by_days 模式下保留多少天内的版本，必须是非负整数'
+    required: false
+    default: '30'
+  regex:
+    description: 'regex 模式下匹配要删除的版本名正则，mode=regex 时必填'
+    required: false
+    default: ''
+  protect:
+    description: '保护名单正则，匹配的版本不会被删除；留空表示不保护任何版本'
+    required: false
+    default: '^(v\d+\.\d+\.\d+|latest|stable)$'
+  delete_git_tag:
+    description: '是否同时删除 Release 对应的 Git Tag（不可恢复）'
+    required: false
+    default: 'false'
+  dry_run:
+    description: '预演模式，只列出要删除的版本而不执行删除'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'

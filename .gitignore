@@ -1,0 +1,13 @@
+# 开发工具
+.env
+.git
+.svn
+.idea
+.vscode
+.log
+.task
+.trae
+.codebuddy
+
+# Ai
+AGENTS.md

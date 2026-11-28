@@ -234,3 +234,214 @@ jobs:
         run: skillhub publish "$SKILL_DIR" --dry-run
       - name: 发布 Skill
         run: skillhub publish "$SKILL_DIR" --changelog "发布 $TAG"
+
+  clawhub-config:
+    name: 检查 ClawHub Token
+    runs-on: ubuntu-26.04
+    outputs:
+      enabled: ${{ steps.config.outputs.enabled }}
+    steps:
+      - name: 检查 ClawHub Token
+        id: config
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: |
+          if [ -z "$CLAWHUB_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  clawhub:
+    name: 发布 ClawHub
+    runs-on: ubuntu-26.04
+    needs: [prepare, release, clawhub-config]
+    if: needs.clawhub-config.outputs.enabled == 'true'
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SKILL_DIR: skills/github-release-cleaner-action-use
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: 同步 Skill 版本
+        id: skill
+        run: |
+          version="${TAG#v}"
+          SKILL_VERSION="$version" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ["SKILL_DIR"]) / "SKILL.md"
+          text = path.read_text()
+          parts = text.split("---", 2)
+          if len(parts) != 3 or parts[0].strip():
+              raise SystemExit("SKILL.md 缺少 frontmatter")
+          metadata = parts[1]
+
+          def field(name):
+              match = re.search(
+                  rf"(?m)^{re.escape(name)}:[ \t]*(.*?)[ \t]*$",
+                  metadata,
+              )
+              if match is None or not match.group(1):
+                  raise SystemExit(f"SKILL.md 缺少 {name} 字段")
+              value = match.group(1)
+              if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                  value = value[1:-1]
+              return value
+
+          slug = field("slug")
+          display_name = field("displayName")
+          text, count = re.subn(
+              r"(?m)^version:.*$",
+              f"version: '{os.environ['SKILL_VERSION']}'",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("SKILL.md 缺少 version 字段")
+          path.write_text(text)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"slug={slug}\n")
+              output.write(f"display_name={display_name}\n")
+              output.write(f"version={os.environ['SKILL_VERSION']}\n")
+          PY
+      - name: 安装 ClawHub CLI
+        run: npm install --global clawhub
+      - name: 验证 ClawHub CLI
+        run: clawhub --help
+      - name: 登录 ClawHub
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: |
+          clawhub login --token "$CLAWHUB_TOKEN"
+          clawhub whoami
+      - name: 预检 Skill
+        env:
+          SKILL_SLUG: ${{ steps.skill.outputs.slug }}
+          SKILL_NAME: ${{ steps.skill.outputs.display_name }}
+          SKILL_VERSION: ${{ steps.skill.outputs.version }}
+        run: |
+          clawhub skill publish "$SKILL_DIR" \
+            --slug "$SKILL_SLUG" \
+            --name "$SKILL_NAME" \
+            --version "$SKILL_VERSION" \
+            --tags latest \
+            --dry-run
+      - name: 发布 Skill
+        env:
+          SKILL_SLUG: ${{ steps.skill.outputs.slug }}
+          SKILL_NAME: ${{ steps.skill.outputs.display_name }}
+          SKILL_VERSION: ${{ steps.skill.outputs.version }}
+        run: |
+          clawhub skill publish "$SKILL_DIR" \
+            --slug "$SKILL_SLUG" \
+            --name "$SKILL_NAME" \
+            --version "$SKILL_VERSION" \
+            --tags latest \
+            --changelog "发布 $TAG"
+
+  secure-skills-config:
+    name: 检查 360 Secure Skills Token
+    runs-on: ubuntu-26.04
+    outputs:
+      enabled: ${{ steps.config.outputs.enabled }}
+    steps:
+      - name: 检查 Secure Skills Token
+        id: config
+        env:
+          SECURE_SKILLS_TOKEN: ${{ secrets.SECURE_SKILLS_TOKEN }}
+        run: |
+          if [ -z "$SECURE_SKILLS_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  secure-skills:
+    name: 发布 Secure Skills
+    runs-on: ubuntu-26.04
+    needs: [prepare, release, secure-skills-config]
+    if: needs.secure-skills-config.outputs.enabled == 'true'
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SKILL_DIR: skills/github-release-cleaner-action-use
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: 同步 Skill 版本
+        id: skill
+        run: |
+          version="${TAG#v}"
+          SKILL_VERSION="$version" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ["SKILL_DIR"]) / "SKILL.md"
+          text = path.read_text()
+          parts = text.split("---", 2)
+          if len(parts) != 3 or parts[0].strip():
+              raise SystemExit("SKILL.md 缺少 frontmatter")
+          metadata = parts[1]
+
+          def field(name):
+              match = re.search(
+                  rf"(?m)^{re.escape(name)}:[ \t]*(.*?)[ \t]*$",
+                  metadata,
+              )
+              if match is None or not match.group(1):
+                  raise SystemExit(f"SKILL.md 缺少 {name} 字段")
+              value = match.group(1)
+              if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                  value = value[1:-1]
+              return value
+
+          slug = field("slug")
+          display_name = field("displayName")
+          text, count = re.subn(
+              r"(?m)^version:.*$",
+              f"version: '{os.environ['SKILL_VERSION']}'",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("SKILL.md 缺少 version 字段")
+          path.write_text(text)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"slug={slug}\n")
+              output.write(f"display_name={display_name}\n")
+              output.write(f"version={os.environ['SKILL_VERSION']}\n")
+          PY
+      - name: 安装 Secure Skills CLI
+        run: npm install --global secure-skills-cli
+      - name: 验证 Secure Skills CLI
+        run: secure-skills --cli-version
+      - name: 登录 Secure Skills
+        env:
+          SECURE_SKILLS_TOKEN: ${{ secrets.SECURE_SKILLS_TOKEN }}
+        run: |
+          secure-skills login --token "$SECURE_SKILLS_TOKEN"
+          secure-skills whoami
+      - name: 发布 Skill
+        env:
+          SKILL_SLUG: ${{ steps.skill.outputs.slug }}
+          SKILL_NAME: ${{ steps.skill.outputs.display_name }}
+          SKILL_VERSION: ${{ steps.skill.outputs.version }}
+        run: |
+          secure-skills publish "$SKILL_DIR" \
+            --slug "$SKILL_SLUG" \
+            --name "$SKILL_NAME" \
+            --version "$SKILL_VERSION" \
+            --changelog "发布 $TAG"

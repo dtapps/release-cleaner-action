@@ -153,7 +153,7 @@ check: check-go ## 检查/测试项目
 .PHONY: sync
 sync: ## 按 GIT_REMOTE 顺序先全部拉取合并，再统一推送（保留本地未提交改动）
 	@IFS=,; for r in $$GIT_REMOTE; do \
-		git fetch "$$r" && git merge --ff-only "$$r/master" || exit 1; \
+		git fetch "$$r" && git merge --ff-only "$$r/main" || exit 1; \
 	done
 	@IFS=,; for r in $$GIT_REMOTE; do git push "$$r" HEAD || exit 1; done
 	@echo "同步完成！"

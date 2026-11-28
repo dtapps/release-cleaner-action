@@ -13,7 +13,7 @@
 AGENTS.md
 
 # 二进制
-release-cleaner
+/release-cleaner
 
 # 测试
 *_test.go

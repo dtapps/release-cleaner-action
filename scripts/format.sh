@@ -72,6 +72,7 @@ YAMLFMT_ARGS=()
 YAML_TARGETS=(
   ".github"
   ".golangci.yml"
+  "action.yml"
 )
 YAML_EXCLUDES=()
 

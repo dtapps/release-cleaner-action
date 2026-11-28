@@ -31,6 +31,7 @@ type TagCommit struct {
 
 // main 启动清理任务，并在失败时输出错误并退出。
 func main() {
+	printTimeInfo(os.Stdout)
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		os.Exit(1)

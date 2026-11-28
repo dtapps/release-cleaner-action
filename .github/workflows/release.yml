@@ -163,3 +163,74 @@ jobs:
             --notes-file release-notes.md
           echo "Release 已发布：${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
           echo "如需上架 Marketplace，请编辑该 Release，勾选 Publish this Action to the GitHub Marketplace 并设置分类。"
+
+  skillhub-config:
+    name: 检查 SkillHub Token
+    runs-on: ubuntu-26.04
+    outputs:
+      enabled: ${{ steps.config.outputs.enabled }}
+    steps:
+      - name: 检查 SkillHub Token
+        id: config
+        env:
+          SKILLHUB_TOKEN: ${{ secrets.SKILLHUB_TOKEN }}
+        run: |
+          if [ -z "$SKILLHUB_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  skillhub:
+    name: 发布 SkillHub
+    runs-on: ubuntu-26.04
+    needs: [prepare, release, skillhub-config]
+    if: needs.skillhub-config.outputs.enabled == 'true'
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SKILLHUB_HOST: https://api.skillhub.cn
+      SKILL_DIR: skills/github-release-cleaner-action-use
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: 同步 Skill 版本
+        run: |
+          version="${TAG#v}"
+          SKILL_VERSION="$version" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ["SKILL_DIR"]) / "SKILL.md"
+          text = path.read_text()
+          text, count = re.subn(
+              r"(?m)^version:.*$",
+              f"version: '{os.environ['SKILL_VERSION']}'",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("SKILL.md 缺少 version 字段")
+          path.write_text(text)
+          PY
+      - name: 安装 SkillHub CLI
+        run: |
+          curl -fsSL https://skillhub.cn/install/install.sh | bash -s -- --cli-only
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: 验证 SkillHub CLI
+        run: skillhub --version
+      - name: 登录 SkillHub
+        env:
+          SKILLHUB_TOKEN: ${{ secrets.SKILLHUB_TOKEN }}
+        run: |
+          skillhub login --key "$SKILLHUB_TOKEN" --host "$SKILLHUB_HOST"
+          skillhub auth whoami
+      - name: 预检 Skill
+        run: skillhub publish "$SKILL_DIR" --dry-run
+      - name: 发布 Skill
+        run: skillhub publish "$SKILL_DIR" --changelog "发布 $TAG"
